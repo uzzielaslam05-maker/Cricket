@@ -777,21 +777,28 @@ function initScreen(){
       // QR that opens sensor page with code pre-filled
       const url=location.origin+location.pathname.replace(/\/$/,'')+'?sensor='+code;
       $('pairQr').innerHTML='';
-      if(window.QRCode){
-        QRCode.toCanvas(document.createElement('canvas'),url,{width:160,margin:1,color:{dark:'#0a0e17',light:'#ffffff'}},(err,canvas)=>{
-          if(!err)$('pairQr').appendChild(canvas);
-        });
-      }
+      // Reliable QR image (no JS library needed)
+      const img=document.createElement('img');
+      img.alt='Pairing QR code';
+      img.width=160;img.height=160;
+      img.style.cssText='border-radius:10px;background:#fff;padding:8px;display:block;margin:0 auto';
+      img.src='https://api.qrserver.com/v1/create-qr-code/?size=160x160&margin=8&data='+encodeURIComponent(url);
+      $('pairQr').appendChild(img);
     });
     peer.on('error',err=>{
       if(err.type==='unavailable-id')startHost();
-      else pairMsg('Pairing error: '+err.type+'. Try a new code or check your connection.');
+      else if(err.type==='network'||err.type==='server-error'||err.type==='socket-error'||err.type==='peer-unavailable'){
+        pairMsg('Network / connection error. Both devices need internet. Create a new code and try again.');
+      }else{
+        pairMsg('Pairing error: '+err.type+'. Try a new code.');
+      }
     });
     peer.on('connection',c=>{
       conn=c;
       c.on('open',()=>{pairMsg('Sensor connected ✓');syncClock();});
       c.on('data',onSensorData);
       c.on('close',()=>{pairMsg('Sensor disconnected');conn=null;});
+      c.on('error',()=>pairMsg('Link error – create a new pairing code.'));
     });
   }
   function syncClock(){
@@ -907,20 +914,38 @@ function initSensor(){
   }
 
   $('connBtn').onclick=()=>{
-    const code=$('codeIn').value.trim().toUpperCase();if(code.length!==4)return;
+    const code=$('codeIn').value.trim().toUpperCase();if(code.length!==4){
+      $('sConn').textContent='Enter the 4-letter code';$('sConn').className='pill';return;
+    }
     try{localStorage.setItem('cricnet-code',code);}catch(e){}
-    if(!window.Peer){$('sConn').textContent='Pairing library failed (need internet)';return;}
+    if(!window.Peer){$('sConn').textContent='Pairing library failed (need internet)';$('sConn').className='pill';return;}
     try{peer&&peer.destroy();}catch(e){}
-    $('sConn').textContent='Connecting…';
-    peer=new Peer();
+    $('sConn').textContent='Connecting…';$('sConn').className='pill';
+    peer=new Peer({debug:1});
+    let timedOut=false;
+    const timeout=setTimeout(()=>{
+      timedOut=true;
+      $('sConn').textContent='Timed out – create a new code on Screen';
+      $('sConn').className='pill';
+      try{peer.destroy();}catch(e){}
+    },12000);
     peer.on('open',()=>{
+      if(timedOut)return;
       conn=peer.connect(PREFIX+code,{reliable:true});
-      conn.on('open',()=>{setConnected(true);});
+      conn.on('open',()=>{clearTimeout(timeout);setConnected(true);});
       conn.on('data',onHost);
       conn.on('close',()=>{setConnected(false);});
-      conn.on('error',()=>{$('sConn').textContent='Connection failed';$('sConn').className='pill';});
+      conn.on('error',()=>{
+        clearTimeout(timeout);
+        $('sConn').textContent='Could not reach Screen – new code?';
+        $('sConn').className='pill';
+      });
     });
-    peer.on('error',e=>{$('sConn').textContent='Error: '+e.type;$('sConn').className='pill';});
+    peer.on('error',e=>{
+      clearTimeout(timeout);
+      const msg=e.type==='network'||e.type==='server-error'?'Network error – check internet':('Error: '+e.type);
+      $('sConn').textContent=msg;$('sConn').className='pill';
+    });
   };
 
   // Live HUD + Pitch view
