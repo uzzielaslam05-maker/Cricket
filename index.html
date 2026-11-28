@@ -171,7 +171,7 @@ th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;le
 
   <div class="guide-section"><h2>2. Tape the bat (red tape)</h2>
     <ul>
-      <li><b>Tape 1 – handle:</b> wrap a 3–4 cm band of <b>matte red</b> tape fully around the handle, about 18 cm from the top.</li>
+      <li><b>Tape 1 – just below your hands:</b> wrap a 4 cm band of <b>matte red</b> tape fully around the bat about <b>40 cm from the top</b> (the lower end of the handle or the shoulder of the blade). Your gloves cover the middle of the handle, so the camera cannot see tape there.</li>
       <li><b>Tape 2 – tip:</b> wrap a second band around the blade, about 8 cm above the toe.</li>
       <li>Two tapes give the app the bat's angle; with one tape it still follows your hands but the bat will not tilt.</li>
       <li>The camera <b>adjusts itself</b> to the tape colour and the room light (and ignores big red areas like shirts or posters). If it ever picks the wrong thing, press <b>Re-detect tape colour</b> or tap the tape in the preview.</li>
@@ -259,6 +259,8 @@ th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;le
         <div class="field-row"><input type="checkbox" id="mirror"><label for="mirror">Mirror shot direction</label></div>
         <label>Camera reach: <b id="reachV">3.4</b> m across the frame</label>
         <input type="range" id="reach" min="1.5" max="7" step="0.1" value="3.4">
+        <label>Tape 1 distance from the top of the bat: <b id="tapeV">40</b> cm <span class="muted">(measure it on your bat)</span></label>
+        <input type="range" id="tape" min="15" max="60" step="1" value="40">
         <label>Bat forgiveness: <b id="forgV">4</b> cm</label>
         <input type="range" id="forg" min="0" max="12" step="1" value="4">
         <label>Bat response (lead): <b id="leadV">40</b> ms <span class="muted">(raise if the on-screen bat lags your real bat)</span></label>
@@ -306,7 +308,7 @@ th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;le
   </div>
 
   <h3 style="margin:24px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">Camera – red tape tracking</h3>
-  <p class="small">Red tape on the handle (≈18 cm from the top) and on the blade (≈8 cm above the toe). Phone in landscape on a stand ≈4 m in front of you, facing you.</p>
+  <p class="small">Red tape just below your hands (≈40 cm from the top of the bat) and on the blade (≈8 cm above the toe). Both must stay visible to the phone while you wait for the ball. Phone in landscape on a stand ≈4 m in front of you, facing you.</p>
   <div style="display:flex;gap:8px;margin-top:8px">
     <select id="camSel" style="flex:1"><option value="environment">Back camera</option><option value="user">Front camera</option></select>
     <button class="btn sec" id="camBtn" style="flex:1">Start camera</button>
@@ -314,6 +316,8 @@ th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;le
   <div style="position:relative;max-width:420px;margin-top:10px"><video id="camV" playsinline muted style="width:100%;border-radius:12px;display:block;background:#000"></video><canvas id="camOv" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas></div>
   <div class="small" id="camInfo" style="margin-top:8px">Camera off.</div>
   <button class="btn sec big" id="sCal" style="margin-top:10px">Calibrate stance</button>
+  <label>My stance: where does the blade point while I wait?</label>
+  <select id="camStance"><option value="up">Blade up (backlift, like a net stance)</option><option value="down">Blade down (resting on the ground)</option></select>
   <div class="field-row"><input type="checkbox" id="camAuto" checked><label for="camAuto">Auto-adjust to tape colour and light</label></div>
   <button class="btn sec big" id="camRedetect">Re-detect tape colour</button>
   <label>Camera swing trigger: <b id="camThrV">4</b> frame-widths/s</label><input type="range" id="camThr" min="1" max="12" step="0.5" value="4">
@@ -347,7 +351,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 <script id="core">
 const Core=(()=>{
   const G=9.81, STUMP_H=0.711, STUMP_HW=0.114, BALL_R=0.036, REL_Z=-18.5, CONTACT_Z=-1.9;
-  const BAT={len:0.96,top:0.18,blade0:0.34,toe:0.78};   // metres: handle tape sits 0.18 m below the top of the bat
+  const BAT={len:0.96,top:0.40,blade0:0.34,toe:0.56};   // metres: tape 1 (just below the hands) sits 0.40 m below the top of the bat; the toe is 0.56 m beyond it
   const rnd=(r)=>r[0]+Math.random()*(r[1]-r[0]);
   const ARCH={
     fast:[
@@ -540,7 +544,7 @@ const Core=(()=>{
   // light changes, and "locks on" – after the tapes are found it only searches near where they just were.
   class BatTracker{
     constructor(){this.target=rgb2hsv(215,35,40);this.base=this.target[0];this.tolH=26;this.thr=4;this.minN=6;this.minS=0.32;this.minV=0.18;
-      this.auto=true;this.found=false;this.manual=false;this.tolUse=26;
+      this.handleLow=true;this.auto=true;this.found=false;this.manual=false;this.tolUse=26;
       this.prev=null;this.lost=0;this.lp=null;this.lt=0;this.vx=0;this.vy=0;this.sp=0;this.sw=false;this.cool=0;this.last=null;}
     setTarget(r,g,b){this.target=rgb2hsv(r,g,b);this.base=this.target[0];this.manual=true;this.found=true;this.minS=Math.max(0.18,this.target[1]*0.55);this.minV=Math.max(0.1,this.target[2]*0.5);}
     reset(){this.prev=null;this.lost=99;this.found=false;this.manual=false;this.lp=null;this.sw=false;this.last=null;}
@@ -591,7 +595,7 @@ const Core=(()=>{
           const lo=Math.min(cs[i].n,cs[j].n),hi=Math.max(cs[i].n,cs[j].n),sep=dist(cs[i],cs[j]);
           if(lo/hi<0.3||sep<0.06||sep>0.9)continue;const sc=(lo/hi)*Math.sqrt(cs[i].n*cs[j].n);if(sc>best){best=sc;A=cs[i];B=cs[j];}}
         if(!A){A=cs.reduce((m,c)=>c.n>m.n?c:m);B=null;}
-        else if(A.y>B.y){const t=A;A=B;B=t;}                           // handle = the upper tape in the stance
+        else if(this.handleLow?A.y<B.y:A.y>B.y){const t=A;A=B;B=t;}     // tape 1 (handle side) = the LOWER tape when the blade is up, the upper tape when the blade is down
       }
       let m=0,sH=0,sH2=0,sS=0,sV=0;
       for(let k=0;k<n;k++){const l=lab[idx[k]];if(l===A.id||(B&&l===B.id)){m++;sH+=dhs[k];sH2+=dhs[k]*dhs[k];sS+=ss[k];sV+=vs[k];}}
@@ -839,6 +843,7 @@ function initScreen(){
   $('cal').oninput=e=>{cfg.cal=+e.target.value;$('calV').textContent=cfg.cal;};
   $('reach').oninput=e=>{cfg.reach=+e.target.value;$('reachV').textContent=cfg.reach.toFixed(1);};
   $('lead').oninput=e=>{cfg.lead=+e.target.value;$('leadV').textContent=cfg.lead;};
+  $('tape').oninput=e=>{const v=+e.target.value/100;Core.BAT.top=v;Core.BAT.toe=Core.BAT.len-v;$('tapeV').textContent=e.target.value;};
   $('forg').oninput=e=>{cfg.forgive=e.target.value/100;$('forgV').textContent=e.target.value;};
   [['announce','announce'],['sound','sound'],['mirror','mirror'],['camMirror','camMirror'],['showBat','showBat'],['edgeOut','edgeOut']].forEach(([id,k])=>$(id).onchange=e=>cfg[k]=e.target.checked);
   $('gear').onclick=()=>$('panel').classList.toggle('open');
@@ -1220,6 +1225,7 @@ function initSensor(){
   // camera: red tape tracking, streams bat pose + swings to the Screen
   const vid=$('camV'),ov=$('camOv'),octx=ov.getContext('2d'),pc=document.createElement('canvas'),pw=320,ph=240;pc.width=pw;pc.height=ph;
   const pctx=pc.getContext('2d',{willReadFrequently:true});let stream=null;
+  $('camStance').onchange=e=>{tracker.handleLow=e.target.value==='up';tracker.prev=null;try{conn&&conn.open&&conn.send({t:'calib'});}catch(x){}};
   $('camAuto').onchange=e=>{tracker.auto=e.target.checked;if(tracker.auto&&!tracker.manual)tracker.found=false;};
   $('camRedetect').onclick=()=>{tracker.reset();tracker.manual=false;$('camInfo').textContent='Looking for the red tape again…';};
   $('camThr').oninput=e=>{tracker.thr=+e.target.value;$('camThrV').textContent=e.target.value;};
