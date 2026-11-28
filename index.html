@@ -174,7 +174,7 @@ th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;le
       <li><b>Tape 1 – handle:</b> wrap a 3–4 cm band of <b>matte red</b> tape fully around the handle, about 18 cm from the top.</li>
       <li><b>Tape 2 – tip:</b> wrap a second band around the blade, about 8 cm above the toe.</li>
       <li>Two tapes give the app the bat's angle; with one tape it still follows your hands but the bat will not tilt.</li>
-      <li>Avoid other red things (shirt, shoes, posters) in the camera's view, and use good, even light.</li>
+      <li>The camera <b>adjusts itself</b> to the tape colour and the room light (and ignores big red areas like shirts or posters). If it ever picks the wrong thing, press <b>Re-detect tape colour</b> or tap the tape in the preview.</li>
     </ul></div>
 
   <div class="guide-section"><h2>3. Pair the Screen and the phone</h2>
@@ -314,6 +314,8 @@ th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;le
   <div style="position:relative;max-width:420px;margin-top:10px"><video id="camV" playsinline muted style="width:100%;border-radius:12px;display:block;background:#000"></video><canvas id="camOv" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas></div>
   <div class="small" id="camInfo" style="margin-top:8px">Camera off.</div>
   <button class="btn sec big" id="sCal" style="margin-top:10px">Calibrate stance</button>
+  <div class="field-row"><input type="checkbox" id="camAuto" checked><label for="camAuto">Auto-adjust to tape colour and light</label></div>
+  <button class="btn sec big" id="camRedetect">Re-detect tape colour</button>
   <label>Camera swing trigger: <b id="camThrV">4</b> frame-widths/s</label><input type="range" id="camThr" min="1" max="12" step="0.5" value="4">
   <label>Colour tolerance: <b id="camTolV">26</b>°</label><input type="range" id="camTol" min="6" max="50" step="1" value="26">
   <label style="margin-top:18px">Motion-sensor sensitivity (trigger at <b id="thrV">350</b> °/s)</label>
@@ -532,41 +534,87 @@ const Core=(()=>{
   // ---------- camera tracking of red tape on the bat ----------
   function rgb2hsv(r,g,b){r/=255;g/=255;b/=255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b),df=mx-mn;let h=0;
     if(df){h=mx===r?((g-b)/df)%6:mx===g?(b-r)/df+2:(r-g)/df+4;h*=60;if(h<0)h+=360;}return [h,mx?df/mx:0,mx];}
+  const hueDiff=(a,b)=>{let d=Math.abs(a-b)%360;return d>180?360-d:d;};
+  const sgnHue=(a,b)=>{let d=(a-b)%360;if(d>180)d-=360;if(d<-180)d+=360;return d;};
+  // Tracks two red tape bands. Self-adjusting: finds the tape colour by itself, keeps adapting colour/brightness/thresholds as the
+  // light changes, and "locks on" – after the tapes are found it only searches near where they just were.
   class BatTracker{
-    constructor(){this.setTarget(215,35,40);this.tolH=26;this.thr=4;this.minN=6;this.minS=0.32;this.minV=0.18;this.prev=null;this.lost=0;this.lp=null;this.lt=0;this.vx=0;this.vy=0;this.sp=0;this.sw=false;this.cool=0;this.last=null;}
-    setTarget(r,g,b){this.target=rgb2hsv(r,g,b);}
+    constructor(){this.target=rgb2hsv(215,35,40);this.base=this.target[0];this.tolH=26;this.thr=4;this.minN=6;this.minS=0.32;this.minV=0.18;
+      this.auto=true;this.found=false;this.manual=false;this.tolUse=26;
+      this.prev=null;this.lost=0;this.lp=null;this.lt=0;this.vx=0;this.vy=0;this.sp=0;this.sw=false;this.cool=0;this.last=null;}
+    setTarget(r,g,b){this.target=rgb2hsv(r,g,b);this.base=this.target[0];this.manual=true;this.found=true;this.minS=Math.max(0.18,this.target[1]*0.55);this.minV=Math.max(0.1,this.target[2]*0.5);}
+    reset(){this.prev=null;this.lost=99;this.found=false;this.manual=false;this.lp=null;this.sw=false;this.last=null;}
+    // look at the whole picture for vivid red and learn its exact colour (peak of a hue histogram)
+    discover(d){
+      const bins=new Array(36).fill(0),sS=new Array(36).fill(0),sV=new Array(36).fill(0),sx=new Array(36).fill(0),sy=new Array(36).fill(0);
+      for(let i=0;i<d.length;i+=4){
+        const q=rgb2hsv(d[i],d[i+1],d[i+2]);if(q[1]<0.5||q[2]<0.22)continue;
+        if(hueDiff(q[0],358)>24)continue;                       // red family only (skips brown wood / skin)
+        const b=Math.floor(((q[0]+10)%360)/10);bins[b]++;sS[b]+=q[1];sV[b]+=q[2];sx[b]+=sgnHue(q[0],0);
+      }
+      let bi=-1,bn=0;for(let b=0;b<36;b++){const n=bins[b]+bins[(b+1)%36]+bins[(b+35)%36];if(n>bn){bn=n;bi=b;}}
+      if(bi<0||bn<this.minN*2)return false;
+      let n=0,S=0,V=0,H=0;for(const b of [(bi+35)%36,bi,(bi+1)%36]){n+=bins[b];S+=sS[b];V+=sV[b];H+=sx[b];}
+      this.target=[((H/n)%360+360)%360,S/n,V/n];this.base=this.target[0];this.found=true;
+      this.minS=Math.max(0.18,this.target[1]*0.55);this.minV=Math.max(0.1,this.target[2]*0.5);return true;
+    }
     locate(d,w){
-      const T=this.target,xs=[],ys=[];
+      if(this.auto&&!this.found){if(!this.discover(d))return null;}
+      const h=Math.round(d.length/4/w),T=this.target,tol=this.auto?this.tolUse:this.tolH,idx=[],dhs=[],ss=[],vs=[];
+      let R2=Infinity;const pa=this.prev&&this.prev.a,pb=this.prev&&(this.prev.b||this.prev.a);
+      if(this.auto&&pa&&this.lost<8){const R=0.1+this.sp*0.04+this.lost*0.035;R2=R*R;}      // lock-on: search only near the tapes
       for(let i=0,p=0;i<d.length;i+=4,p++){
+        if(R2!==Infinity){const x=(p%w)/w,y=((p/w)|0)/w,a=(x-pa.x)**2+(y-pa.y)**2,b=(x-pb.x)**2+(y-pb.y)**2;if(a>R2&&b>R2)continue;}
         const q=rgb2hsv(d[i],d[i+1],d[i+2]);if(q[1]<this.minS||q[2]<this.minV)continue;
-        let dh=Math.abs(q[0]-T[0]);dh=Math.min(dh,360-dh);if(dh>this.tolH)continue;
-        xs.push((p%w)/w);ys.push(((p/w)|0)/w);
+        const dh=sgnHue(q[0],T[0]);if(Math.abs(dh)>tol)continue;
+        idx.push(p);dhs.push(dh);ss.push(q[1]);vs.push(q[2]);
       }
-      const n=xs.length;if(n<this.minN)return null;
-      let ca,cb;
-      if(this.prev&&this.prev.b){ca=[this.prev.a.x,this.prev.a.y];cb=[this.prev.b.x,this.prev.b.y];}
-      else{let iT=0,iB=0;for(let i=1;i<n;i++){if(ys[i]<ys[iT])iT=i;if(ys[i]>ys[iB])iB=i;}ca=[xs[iT],ys[iT]];cb=[xs[iB],ys[iB]];}
-      let na=0,nb=0;
-      for(let it=0;it<4;it++){
-        let ax=0,ay=0,bx=0,by=0;na=0;nb=0;
-        for(let i=0;i<n;i++){const da=(xs[i]-ca[0])**2+(ys[i]-ca[1])**2,db=(xs[i]-cb[0])**2+(ys[i]-cb[1])**2;if(da<=db){ax+=xs[i];ay+=ys[i];na++;}else{bx+=xs[i];by+=ys[i];nb++;}}
-        if(na)ca=[ax/na,ay/na];if(nb)cb=[bx/nb,by/nb];
+      const n=idx.length;if(n<this.minN)return null;
+      // group the red pixels into blobs (gaps of up to 2 px are bridged), then keep the blobs that look like the two tapes
+      const mask=new Uint8Array(w*h),lab=new Int16Array(w*h);for(const p of idx)mask[p]=1;
+      const comps=[];
+      for(const p0 of idx){
+        if(mask[p0]!==1)continue;const id=comps.length+1,st=[p0];mask[p0]=2;let c=0,sx=0,sy=0;
+        while(st.length){const p=st.pop(),x=p%w,y=(p/w)|0;lab[p]=id;c++;sx+=x;sy+=y;
+          for(let dy=-2;dy<=2;dy++){const yy=y+dy;if(yy<0||yy>=h)continue;for(let dx=-2;dx<=2;dx++){const xx=x+dx;if(xx<0||xx>=w)continue;const q=yy*w+xx;if(mask[q]===1){mask[q]=2;st.push(q);}}}}
+        comps.push({id,n:c,x:sx/c/w,y:sy/c/w});
       }
-      const sep=Math.hypot(ca[0]-cb[0],ca[1]-cb[1]);
-      if(na<Math.max(3,n*0.15)||nb<Math.max(3,n*0.15)||sep<0.05){
-        let sx=0,sy=0;for(let i=0;i<n;i++){sx+=xs[i];sy+=ys[i];}return {a:{x:sx/n,y:sy/n},b:null,n};
+      const cap=0.035*w*h,cs=comps.filter(c=>c.n>=3&&c.n<=cap);if(!cs.length)return null;     // huge red areas (shirts, posters) are ignored
+      const dist=(p,q)=>Math.hypot(p.x-q.x,p.y-q.y);let A=null,B=null;
+      if(this.prev&&this.prev.b&&this.lost<8){
+        let ba=1e9,bb=1e9;for(const c of cs){const da=dist(c,this.prev.a),db=dist(c,this.prev.b);if(da<ba){ba=da;A=c;}if(db<bb){bb=db;B=c;}}
+        if(A===B||ba>0.25||bb>0.25){if(ba<=bb){B=null;}else{A=null;}}
+        if(!A&&B){A=B;B=null;}
       }
-      let A={x:ca[0],y:ca[1]},B={x:cb[0],y:cb[1]};
-      if(this.prev&&this.prev.b){const dist=(p,q)=>Math.hypot(p.x-q.x,p.y-q.y);if(dist(A,this.prev.b)+dist(B,this.prev.a)<dist(A,this.prev.a)+dist(B,this.prev.b)){const t=A;A=B;B=t;}}
-      else if(A.y>B.y){const t=A;A=B;B=t;}       // handle = the upper tape in the stance
-      return {a:A,b:B,n};
+      if(!A){
+        let best=-1;for(let i=0;i<cs.length;i++)for(let j=i+1;j<cs.length;j++){
+          const lo=Math.min(cs[i].n,cs[j].n),hi=Math.max(cs[i].n,cs[j].n),sep=dist(cs[i],cs[j]);
+          if(lo/hi<0.3||sep<0.06||sep>0.9)continue;const sc=(lo/hi)*Math.sqrt(cs[i].n*cs[j].n);if(sc>best){best=sc;A=cs[i];B=cs[j];}}
+        if(!A){A=cs.reduce((m,c)=>c.n>m.n?c:m);B=null;}
+        else if(A.y>B.y){const t=A;A=B;B=t;}                           // handle = the upper tape in the stance
+      }
+      let m=0,sH=0,sH2=0,sS=0,sV=0;
+      for(let k=0;k<n;k++){const l=lab[idx[k]];if(l===A.id||(B&&l===B.id)){m++;sH+=dhs[k];sH2+=dhs[k]*dhs[k];sS+=ss[k];sV+=vs[k];}}
+      const stat={dh:sH/m,sd:Math.sqrt(Math.max(0,sH2/m-(sH/m)**2)),s:sS/m,v:sV/m};
+      return {a:{x:A.x,y:A.y},b:B?{x:B.x,y:B.y}:null,n:A.n+(B?B.n:0),stat};
+    }
+    // learn from what was just matched: colour, brightness, thresholds and tolerance follow the light
+    adapt(st,n){
+      if(!this.auto||!st||n<this.minN*2)return;
+      const k=0.06,T=this.target;
+      T[0]=((T[0]+st.dh*k)%360+360)%360;T[1]+=(st.s-T[1])*k;T[2]+=(st.v-T[2])*k;
+      if(hueDiff(T[0],this.base)>35)T[0]=this.base+Math.sign(sgnHue(T[0],this.base))*35;      // never wander off the original red
+      this.minS=Math.max(0.18,T[1]*0.55);this.minV=Math.max(0.1,T[2]*0.5);
+      this.tolUse=Math.max(14,Math.min(42,this.tolUse+((2.6*st.sd+11)-this.tolUse)*0.1));
     }
     _end(){const ev={peak:Math.min(1000,Math.round(this.peak*80)),peakT:this.pT,dx:this.pv[0],dy:this.pv[1]};this.sw=false;this.cool=this.pT+900;return ev;}
-    // returns {pose, ev}: pose = tape positions in frame-width units (or null when lost); ev = a finished swing
     feed(d,w,h,t){
       const p=this.locate(d,w);this.last=p;let ev=null;
-      if(!p){if(++this.lost>15)this.prev=null;this.lp=null;if(this.sw)ev=this._end();return {pose:null,ev};}
-      this.lost=0;this.prev=p;
+      if(!p){this.lost++;if(this.lost>15)this.prev=null;
+        if(this.auto){this.minS=Math.max(0.2,this.minS*0.9);this.minV=Math.max(0.1,this.minV*0.87);this.tolUse=Math.min(42,this.tolUse+1.5);   // light changed? get less strict until the tape shows up again
+          if(!this.manual&&this.lost>12)this.found=false;}                         // still nothing after ~0.4 s: look for the colour again
+        this.lp=null;if(this.sw)ev=this._end();return {pose:null,ev};}
+      this.lost=0;this.prev=p;if(p.b)this.adapt(p.stat,p.n);else this.adapt(p.stat,p.n*0.6);
       const tip=p.b||p.a;
       if(this.lp){
         const dt=(t-this.lt)/1000;
@@ -1172,13 +1220,16 @@ function initSensor(){
   // camera: red tape tracking, streams bat pose + swings to the Screen
   const vid=$('camV'),ov=$('camOv'),octx=ov.getContext('2d'),pc=document.createElement('canvas'),pw=320,ph=240;pc.width=pw;pc.height=ph;
   const pctx=pc.getContext('2d',{willReadFrequently:true});let stream=null;
+  $('camAuto').onchange=e=>{tracker.auto=e.target.checked;if(tracker.auto&&!tracker.manual)tracker.found=false;};
+  $('camRedetect').onclick=()=>{tracker.reset();tracker.manual=false;$('camInfo').textContent='Looking for the red tape again…';};
   $('camThr').oninput=e=>{tracker.thr=+e.target.value;$('camThrV').textContent=e.target.value;};
   $('camTol').oninput=e=>{tracker.tolH=+e.target.value;$('camTolV').textContent=e.target.value;};
   $('camBtn').onclick=async()=>{
     if(camOn){camOn=false;stream&&stream.getTracks().forEach(t=>t.stop());vid.srcObject=null;$('camBtn').textContent='Start camera';$('camInfo').textContent='Camera off.';return;}
     try{
       stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:$('camSel').value,width:{ideal:640},height:{ideal:480},frameRate:{ideal:60}},audio:false});
-      vid.srcObject=stream;await vid.play();camOn=true;$('camBtn').textContent='Stop camera';$('camInfo').textContent='Red-tape preset active. Circles show what is tracked. Tap the tape to lock a different colour.';loopCam();
+      vid.srcObject=stream;try{const tr=stream.getVideoTracks()[0],cap=tr.getCapabilities?tr.getCapabilities():{},adv={};if(cap.exposureMode&&cap.exposureMode.includes('continuous'))adv.exposureMode='continuous';if(cap.whiteBalanceMode&&cap.whiteBalanceMode.includes('continuous'))adv.whiteBalanceMode='continuous';if(Object.keys(adv).length)await tr.applyConstraints({advanced:[adv]});}catch(e){}
+      tracker.reset();await vid.play();camOn=true;$('camBtn').textContent='Stop camera';$('camInfo').textContent='Red-tape preset active. Circles show what is tracked. Tap the tape to lock a different colour.';loopCam();
     }catch(e){$('camInfo').textContent='Camera unavailable (needs HTTPS + permission).';}
   };
   vid.addEventListener('click',e=>{
@@ -1196,8 +1247,8 @@ function initSensor(){
     ov.width=vid.clientWidth;ov.height=vid.clientHeight;octx.clearRect(0,0,ov.width,ov.height);
     const L=tracker.last;
     if(L){[[L.a,'#fbbf24'],[L.b,'#22d3ee']].forEach(([p,c])=>{if(!p)return;octx.strokeStyle=c;octx.lineWidth=3;octx.beginPath();octx.arc(p.x*ov.width,p.y*ov.width,12,0,7);octx.stroke();});
-      $('camInfo').textContent=(L.b?'Tracking both tapes ✓':'Tracking one tape (the second tape is too small or hidden)')+' · '+L.n+' red pixels';}
-    else $('camInfo').textContent='No red tape found (hue target '+Math.round(tracker.target[0])+'°). Move closer (2–3 m), add light, or tap the tape in the preview to lock its colour.';
+      $('camInfo').textContent=(L.b?'Tracking both tapes ✓':'Tracking one tape (the second tape is too small or hidden)')+' · '+L.n+' red pixels · colour '+Math.round(tracker.target[0])+'° / '+Math.round(tracker.target[1]*100)+'% / '+Math.round(tracker.target[2]*100)+'%';}
+    else $('camInfo').textContent=(tracker.auto&&!tracker.found?'Searching the picture for red tape…':'Lost the tape (looking again)…')+' Move closer (2–3 m), add light, or tap the tape in the preview to lock its colour.';
     if(res.pose&&conn&&conn.open&&t-lastSend>=8){lastSend=t;try{conn.send({t:'pose',ts:t,a:res.pose.a,b:res.pose.b,v:res.pose.v});}catch(e){}}
     if(res.ev){const dir={dx:res.ev.dx,dy:res.ev.dy};$('sLast').textContent='Swing detected (camera) – power '+Math.round(res.ev.peak/10)+'%';try{conn&&conn.open&&conn.send({t:'swing',ts:res.ev.peakT,peak:res.ev.peak,dir});}catch(e){}}
     (vid.requestVideoFrameCallback?vid.requestVideoFrameCallback.bind(vid):requestAnimationFrame)(loopCam);
